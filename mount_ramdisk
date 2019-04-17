@@ -1,0 +1,190 @@
+#!/bin/bash -e
+
+DPRINT=
+BUNDLE=
+FSNAME=
+
+# These need to be duplicated because we haven't yet figured lib.sh path
+eo()
+{
+	echo "Error: $1"
+	exit 1
+}
+
+decho()
+{
+	if [ -n "$DPRINT" ] ; then
+	       	echo "$@"
+	fi
+}
+
+get_bundle()
+{
+	OLD_DIR="$( pwd )"
+	FN="$0"
+	[ -h "$FN" ] && FN="$( readlink $FN )"
+
+	# Get the directory the script lives in
+	cd "$( dirname "$FN" )" || eo "Can't find current dir"
+	L="$( pwd )"
+	cd "$OLD_DIR" || eo "Can't find old current dir?  Wtf?"
+
+	decho "Looking for bundle dir in $L"
+
+	while [[ -n "$L" ]] && [[ "$L" != "." ]] && [[ "$L" != "/" ]] ; do
+		if [[ "$( basename "$L" )" = "Contents" ]] ; then
+			BUNDLE="$L"
+			return 0
+		fi
+
+		L="$( dirname "$L" )"
+	done
+
+	eo "Couldn't find bundle directory"
+}
+
+get_fsname()
+{
+	OLD_DIR="$( pwd )"
+
+	cd "$BUNDLE/.." || eo "Can't cd to bundle dir!" 
+
+	FSNAME="$( basename "$( pwd )" )"
+	FSNAME=${FSNAME%.fs}
+
+	cd "$OLD_DIR" || eo "Couldn't cd back!"
+}
+
+usage()
+{
+	echo "Usage: mount -t tmpfs -o [options] /dev/diskname /mountpoint"
+	echo "Options:"
+	echo "  size=XXX       Set fs size. Supports k, m, g, etc. suffixes"
+	echo "  ro             Mount readonly.  Useful with initrd option"
+	echo "  initrd=tarfile Extract tarfile after mounting"
+	echo "  nobrowse       Hide from finder"
+	echo "  nomount        Do not mount disk after creation"
+	echo "  nowatch        Do not watch for disk deletion. (NOTE: This"
+	echo "                 will cause the disk to remain after unmount)"
+	echo "  autoclean      Automatically delete old files from target disk"
+	echo "  cleantime=XXm  Sets how old files must be before deletion"
+
+	exit 0
+}
+
+[ "$1" = "--help" ] && usage
+[ "$*" = "" ] && usage
+
+decho "Run as: $0 $*"
+
+get_bundle
+get_fsname
+[ -n "$FSNAME" ] || eo "Couldn't get fs name"
+[ -n "$BUNDLE" ] || eo "Bundle not found"
+
+. "$BUNDLE/Resources/lib.sh" || eo "Can't find lib.sh"
+
+O_SIZE=$(( 100 * 1024 * 1024 / 512 ))
+O_READONLY=
+O_INITRD=
+O_NOBROWSE=
+NOMOUNT=
+NOWATCH=
+O_AUTOCLEAN=
+O_CLEANTIME=$(( 90 * 60 )) #90 hours
+
+#parse parameters
+while [ "$1" = "-o" ] ; do
+	KEY=${2%%=*}
+	VAL=${2#*=}
+
+	decho "Option: $KEY = $VAL"
+
+	case "$KEY" in
+
+	debug)
+		DPRINT=y
+	;;
+
+	size)
+		O_SIZE="$( echo "$VAL" | h2m_bytes )"
+		O_SIZE=$(( O_SIZE / 512 ))
+	;;
+
+	ro)
+		O_READONLY=y
+	;;
+
+	initrd)
+		O_INITRD="$VAL"
+	;;
+
+	nobrowse)
+		O_NOBROWSE=y
+	;;
+
+	nomount)
+		NOMOUNT=y
+	;;
+
+	nowatch)
+		NOWATCH=y
+	;;
+
+	help)
+		usage
+	;;
+
+	autoclean)
+		O_AUTOCLEAN=y
+	;;
+
+	*)
+		eo "Unrecognized option: $KEY"
+	;;
+
+	esac
+
+	shift 2
+done
+
+
+export E_BUNDLE="$BUNDLE"
+export E_FSNAME="$FSNAME"
+export DPRINT
+export O_SIZE
+export O_READONLY
+export O_INITRD
+export O_NOBROWSE
+export O_AUTOCLEAN
+export O_CLEANTIME
+
+decho "$FSNAME installed in $BUNDLE"
+
+decho "Running as $( whoami )"
+decho "SIZE=$O_SIZE"
+decho "READONLY=$O_READONLY"
+decho "INITRD=$O_INITRD"
+decho "NOBROWSE=$O_NOBROWSE"
+decho "NOMOUNT=$NOMOUNT"
+decho "NOWATCH=$NOWATCH"
+decho "AUTOCLEAN=$O_AUTOCLEAN"
+decho "CLEANTIME=$O_CLEANTIME"
+
+# First, mount the thing
+[ -z "$NOMOUNT" ] && $BUNDLE/Resources/mkramdisk "$@"
+
+# Now we need to find the disk mount point
+COUNT=$( mount | grep " on $2 (" | wc -l )
+[ $COUNT -eq 1 ] || eo "Can't seem to figure disk mount point"
+DISK="$( mount | grep " on $2 (" | cut -d " " -f 1 )"
+
+PLIST_ID="${RANDOM}${2//[^a-zA-Z0-9]/_}"
+decho "Plist id is $PLIST_ID"
+
+decho "Targ path is $2"
+# Then start a watcher
+[ -z "$NOWATCH" ] && $BUNDLE/Resources/startwatch "$DISK" "$2" "$PLIST_ID"
+
+exit 0
+

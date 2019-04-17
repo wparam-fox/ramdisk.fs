@@ -1,0 +1,78 @@
+#!/bin/bash -e
+
+# checkmounted /dev/whatever /path/to/mount /path/to/this.plist $FSNAME mode
+# launchd: Called from launchd.  Fork the actual process to the background,
+#          and sit there for 10 seconds doing nothing.  The 10 second delay
+#          is to stop launchd from complaining that we exited too soon.  It
+#          won't re-start us in that time, but that's fine, as we only need
+#          need to do our check once, when the longer timeout expires.  If
+#          we get started multiple times because FS operations happened
+#          between launchd and bg times, that's ok.
+#          The time that launchd mode waits also precludes multiple calls to
+#          the script, so more doesn't hurt
+# bg: Run from the launchd call.  This mode sleeps for longer, and once THAT
+#     timeout expires, we do the actual check to see if the disk is still
+#     mounted.  Even if there was a flurry of activity followed by an unmount,
+#     we will still catch it, because we're guaranteed to be running at least
+#     30 seconds after the last time launchd saw fit to notify us.
+MOUNTPOINT="$2"
+DISK="$1"
+PLIST="$3"
+FSNAME="$4"
+MODE="$5"
+
+dlogger()
+{
+	# I wish I could just use &&, but it causes issues with -e
+	if [ -n "$DPRINT" ] ; then
+		logger "$FSNAME/debug: $*"
+	fi
+	return 0
+}
+
+dlogger "Checkmounted($5) called, $1 $2 $3 $4 CLEAN=$O_AUTOCLEAN $CLEAN_FILE"
+
+if [ "$MODE" = "launchd" ] ; then
+	$0 "$DISK" "$MOUNTPOINT" "$PLIST" "$FSNAME" bg &
+	sleep 60
+	dlogger "Initial launchd bit exiting"
+	exit 0
+fi
+
+dlogger "Running as bg; waiting"
+
+sleep 90
+
+dlogger "bg sleep done; checking disk"
+
+if mount | grep -q "^$DISK on $MOUNTPOINT " ; then
+	# It's still here; do nothing
+	dlogger "Disk is still mounted; doing nothing"
+	exit 0
+fi
+
+# Timeouts have passed, and the disk is unmounted; remove it.
+logger "$FSNAME: Disk $DISK unmounted, removing device"
+
+# If we're a second run through this script after umount, this call should
+# fail and end the script because of -e
+hdiutil detach "$DISK"
+
+launchctl unload "$PLIST"
+rm "$PLIST"
+
+dlogger "Succesfully removed disk and plist file"
+
+if [ -n "$O_AUTOCLEAN" ] ; then
+	launchctl unload "$CLEAN_FILE"
+	rm "$CLEAN_FILE"
+
+	dlogger "Removed autoclean job and plist file"
+fi
+
+#WARNING: There is a very small chance of a race condition between the above
+# commands and the autoclean plist itself.  If you put anything else after the
+# autoclean thing, make sure you put some more protection on it, or else the
+# set -e will kill us and cause problems
+
+exit 0

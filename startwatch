@@ -1,0 +1,81 @@
+#!/bin/bash -e
+
+# These need the -e in the bang line to be effective
+[ -n "$E_BUNDLE" ]
+[ -n "$E_FSNAME" ]
+
+. "$E_BUNDLE/Resources/lib.sh"
+
+# startwatch /dev/whatever /path/to/mount
+mkplist()
+{
+	cat << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Disabled</key>
+	<false/>
+	<key>Label</key>
+	<string>com.wparam.mountwatch.$PLIST_ID</string>
+	<key>Program</key>
+	<string>$E_BUNDLE/Resources/checkmounted</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$E_BUNDLE/Resources/checkmounted</string>
+		<string>$DISK</string>
+		<string>$MOUNTPOINT</string>
+		<string>$PLIST_FILE</string>
+		<string>$E_FSNAME</string>
+		<string>launchd</string>
+	</array>
+	<key>WatchPaths</key>
+	<array>
+		<string>$MOUNTPOINT</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false />
+	<key>AbandonProcessGroup</key>
+	<true />
+	<key>KeepAlive</key>
+	<false />
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>O_AUTOCLEAN</key>
+		<string>$O_AUTOCLEAN</string>
+		<key>CLEAN_FILE</key>
+		<string>$CLEAN_FILE</string>
+EOF
+if [ -n "$DPRINT" ] ; then
+	cat << EOF
+		<key>DPRINT</key>
+		<string>$DPRINT</string>
+EOF
+fi
+	cat << EOF
+	</dict>
+</dict>
+</plist>
+EOF
+}
+
+if ! [ -d "$PLIST_PATH" ] ; then
+	mkdir -p "$PLIST_PATH" || eo "Can't make plist path"
+	chmod 1777 "$PLIST_PATH" || eo "Can't set plist path world-write"
+fi
+
+DISK="$1"
+MOUNTPOINT="$2"
+PLIST_ID="$3"
+
+
+PLIST_FILE="$( watch_plist "$PLIST_ID" )"
+CLEAN_FILE="$( clean_plist "$PLIST_ID" )"
+
+mkplist > "$PLIST_FILE"
+
+launchctl load "$PLIST_FILE"
+
+echo "Deployed disk mount watcher for $DISK"

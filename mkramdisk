@@ -1,0 +1,66 @@
+#!/bin/bash -e
+
+# These need the -e in the bang line to be effective
+[ -n "$E_BUNDLE" ]
+[ -n "$E_FSNAME" ]
+
+. "$E_BUNDLE/Resources/lib.sh"
+
+baddisk()
+{
+	echo "Error: $1 is pretty important; refusing to erase it"
+	echo "If this is expected, try running this command:"
+	echo "hdiutil attach -nomount ram://10000"
+	echo "to create a dummy device, and try the $E_FSNAME mount again"
+
+	exit 1
+}
+
+decho "Run as: $0 $*"
+
+#set defaults
+SIZE="${O_SIZE?Missing option}"
+READONLY="${O_READONLY?Missing option}"
+INITRD="${O_INITRD?Missing option}"
+NOBROWSE="${O_NOBROWSE?Missing option}"
+
+
+
+#bounds/sanity check
+[ -n "$SIZE" ] || eo "Size not given or invalid"
+[ -d "$2" ] || eo "Mountpoint $2 does not exist"
+if [ -n "$INITRD" ] ; then
+	[ -f "$INITRD" ] || eo "Initrd file $INITRD does not exist"
+fi
+
+# create the disk device
+DEV=$( hdiutil attach ${NOBROWSE:+-nobrowse} -nomount "ram://$SIZE" | \
+	awk '{ print $1 }' )
+decho "Dev is $DEV"
+[ -n "$DEV" ] || eo "Disk name not returned"
+
+# wait a short bit for the /dev node to be created
+X=0; while [[ X -lt 20 ]] && [[ ! -b "$DEV" ]] ; do sleep 0.1; X=$((X+1)); done
+[ -b "$DEV" ] || eo "Disk not a block special file"
+
+# Some sanity checks
+[[ "$DEV" = "/dev/disk0"* ]] && baddisk "$DEV"
+[[ "$DEV" = "/dev/disk1"* ]] && baddisk "$DEV"
+
+# make the filesystem on the dev node
+newfs_hfs -v "$1" "$DEV" > /dev/null
+
+#mount the filesystem
+mount -t hfs "$DEV" "$2"
+
+# extract tar file, if given
+if [ -n "$INITRD" ] ; then
+	( cd $2 && tar xvf "$INITRD" ) 2> /dev/null
+fi
+
+# set read-only
+if [ -n "$READONLY" ] ; then
+	mount -u -r "$2"
+fi
+
+exit 0
